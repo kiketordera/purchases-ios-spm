@@ -577,6 +577,15 @@ class PurchasesConfiguringTests: BasePurchasesTests {
         expect(self.mockPaymentQueueWrapper.delegate) === self.purchasesOrchestrator
     }
 
+    func testManualSyncDoesNotAttachPromotionalPaymentQueueDelegate() {
+        self.systemInfo = MockSystemInfo(finishTransactions: true,
+                                         storeKitVersion: .storeKit2,
+                                         dangerousSettings: .init(autoSyncPurchases: false))
+        self.setupPurchases()
+
+        expect(self.mockPaymentQueueWrapper.delegate).to(beNil())
+    }
+
     // MARK: - Custom Entitlement Computation
     func testCustomEntitlementComputationSkipsFirstDelegateCall() async throws {
         self.systemInfo = MockSystemInfo(finishTransactions: true,
@@ -726,6 +735,16 @@ class PurchasesConfiguringTests: BasePurchasesTests {
     }
 
     // MARK: StoreKit2PurchaseIntentListener Configuration Tests
+    func testManualSyncDoesNotInstallPromotionalPurchaseIntentListener() async {
+        self.systemInfo = MockSystemInfo(finishTransactions: true,
+                                         storeKitVersion: .storeKit2,
+                                         dangerousSettings: .init(autoSyncPurchases: false))
+        self.setupPurchases()
+
+        await expect(self.purchasesOrchestrator._storeKit2PurchaseIntentListener)
+            .toAlways(beNil(), until: .milliseconds(250))
+    }
+
     func testDoesntSetPurchasesOrchestratorStoreKit2PurchaseIntentListenerIfSK1IsEnabled() {
         self.systemInfo = MockSystemInfo(finishTransactions: false,
                                          storeKitVersion: .storeKit1)

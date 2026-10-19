@@ -229,7 +229,8 @@ class BasePurchasesOrchestratorTests: StoreKitConfigTestCase {
         storeKit2ObserverModePurchaseDetector: StoreKit2ObserverModePurchaseDetectorType,
         storeKit2ProductPurchaser: StoreKit2ProductPurchaserType,
         diagnosticsSynchronizer: DiagnosticsSynchronizerType? = nil,
-        diagnosticsTracker: DiagnosticsTrackerType? = nil
+        diagnosticsTracker: DiagnosticsTrackerType? = nil,
+        transactionPoster: TransactionPoster? = nil
     ) {
         self.orchestrator = PurchasesOrchestrator(
             productsManager: self.productsManager,
@@ -243,7 +244,7 @@ class BasePurchasesOrchestratorTests: StoreKitConfigTestCase {
             transactionFetcher: self.mockTransactionFetcher,
             customerInfoManager: self.customerInfoManager,
             backend: self.backend,
-            transactionPoster: self.transactionPoster,
+            transactionPoster: transactionPoster ?? self.transactionPoster,
             currentUserProvider: self.currentUserProvider,
             transactionsManager: self.transactionsManager,
             deviceCache: self.deviceCache,
@@ -362,4 +363,41 @@ extension BasePurchasesOrchestratorTests {
         )
     }
 
+}
+
+/// For native receipt assertions: forward every operation to the real StoreKit
+/// fetcher and retain exactly the receipt returned at the posting boundary.
+@available(iOS 15.0, tvOS 15.0, watchOS 8.0, macOS 12.0, *)
+final class ActualStoreKit2ReceiptFetcherSpy: StoreKit2TransactionFetcherType {
+    private let wrapped = StoreKit2TransactionFetcher(diagnosticsTracker: nil)
+    private let capturedReceipt: Atomic<StoreKit2Receipt?> = .init(nil)
+
+    var receipt: StoreKit2Receipt? { self.capturedReceipt.value }
+
+    var unfinishedVerifiedTransactions: [StoreTransaction] {
+        get async { await self.wrapped.unfinishedVerifiedTransactions }
+    }
+    var hasPendingConsumablePurchase: Bool {
+        get async { await self.wrapped.hasPendingConsumablePurchase }
+    }
+    var firstVerifiedAutoRenewableTransaction: StoreTransaction? {
+        get async { await self.wrapped.firstVerifiedAutoRenewableTransaction }
+    }
+    var firstVerifiedTransaction: StoreTransaction? {
+        get async { await self.wrapped.firstVerifiedTransaction }
+    }
+    var oldestVerifiedTransaction: StoreTransaction? {
+        get async { await self.wrapped.oldestVerifiedTransaction }
+    }
+    var appTransactionJWS: String? {
+        get async { await self.wrapped.appTransactionJWS }
+    }
+    func appTransactionJWS(_ completionHandler: @escaping (String?) -> Void) {
+        self.wrapped.appTransactionJWS(completionHandler)
+    }
+    func fetchReceipt(containing transaction: StoreTransactionType) async -> StoreKit2Receipt {
+        let receipt = await self.wrapped.fetchReceipt(containing: transaction)
+        self.capturedReceipt.value = receipt
+        return receipt
+    }
 }

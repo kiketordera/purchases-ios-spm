@@ -25,6 +25,9 @@ final class MockStoreKit2TransactionListener: StoreKit2TransactionListenerType {
     weak var invokedDelegate: StoreKit2TransactionListenerDelegate?
     var invokedDelegateList: [StoreKit2TransactionListenerDelegate] = []
 
+    /// Opt in to the real explicit-result handler without observing StoreKit updates.
+    /// Existing mock behavior remains the default for unrelated upstream tests.
+    var handleActualPurchaseResult = false
     var mockCancelled = false
     // `StoreKit.Transaction` can't be stored directly as a property.
     // See https://openradar.appspot.com/radar?id=4970535809187840 / https://bugs.swift.org/browse/SR-15825
@@ -63,6 +66,13 @@ final class MockStoreKit2TransactionListener: StoreKit2TransactionListenerType {
         self.invokedHandleCount += 1
         self.invokedHandleParameters = (.init(purchaseResult), ())
         self.invokedHandleParametersList.append((.init(purchaseResult), ()))
+
+        if self.handleActualPurchaseResult {
+            let updates = AsyncStream<StoreKit2TransactionListener.TransactionResult> { $0.finish() }
+            let listener = StoreKit2TransactionListener(diagnosticsTracker: nil, updates: updates)
+            return try await listener.handle(purchaseResult: purchaseResult,
+                                             fromTransactionUpdate: fromTransactionUpdate)
+        }
 
         if self.mockCancelled {
             return .userCancelled

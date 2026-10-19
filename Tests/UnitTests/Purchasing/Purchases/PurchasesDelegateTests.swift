@@ -161,32 +161,6 @@ class PurchasesDelegateTests: BasePurchasesTests {
         expect(postedWithTransactionId).to(beEmpty())
     }
 
-    private func createCachedMetadata(
-        transactionId: String,
-        productIdentifier: String
-    ) -> LocalTransactionMetadata {
-        return LocalTransactionMetadata(
-            transactionId: transactionId,
-            productData: ProductRequestData(
-                productIdentifier: productIdentifier,
-                paymentMode: nil,
-                currencyCode: "USD",
-                storeCountry: "US",
-                price: 9.99,
-                normalDuration: nil,
-                introDuration: nil,
-                introDurationType: nil,
-                introPrice: nil,
-                subscriptionGroup: nil,
-                discounts: nil
-            ),
-            transactionData: PurchasedTransactionData(),
-            encodedAppleReceipt: .receipt("test_receipt_\(transactionId)".asData),
-            originalPurchasesAreCompletedBy: .revenueCat,
-            sdkOriginated: true
-        )
-    }
-
     @MainActor
     func testDelegateIsNotifiedWhenReceiptPostFailsButGetCustomerInfoSucceeds() async throws {
         try AvailabilityChecks.iOS15APIAvailableOrSkipTest()
@@ -273,6 +247,78 @@ class PurchasesDelegateTests: BasePurchasesTests {
             self.storeKit1Wrapper.delegate?.storeKit1Wrapper(self.storeKit1Wrapper,
                                                              updatedTransaction: transaction)
         }
+    }
+
+}
+
+private func createCachedMetadata(
+    transactionId: String,
+    productIdentifier: String
+) -> LocalTransactionMetadata {
+    return LocalTransactionMetadata(
+        transactionId: transactionId,
+        productData: ProductRequestData(
+            productIdentifier: productIdentifier,
+            paymentMode: nil,
+            currencyCode: "USD",
+            storeCountry: "US",
+            price: 9.99,
+            normalDuration: nil,
+            introDuration: nil,
+            introDurationType: nil,
+            introPrice: nil,
+            subscriptionGroup: nil,
+            discounts: nil
+        ),
+        transactionData: PurchasedTransactionData(),
+        encodedAppleReceipt: .receipt("test_receipt_\(transactionId)".asData),
+        originalPurchasesAreCompletedBy: .revenueCat,
+        sdkOriginated: true
+    )
+}
+
+final class PurchasesManualMetadataSyncTests: BasePurchasesTests {
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        self.systemInfo = MockSystemInfo(finishTransactions: true,
+                                         storeKitVersion: .storeKit2,
+                                         dangerousSettings: .init(autoSyncPurchases: false))
+    }
+
+    @MainActor
+    func testManualSyncConfigurePreservesCachedMetadataWithoutPosting() async {
+        self.mockLocalTransactionMetadataStore.storeMetadata(
+            createCachedMetadata(transactionId: "original-owner", productIdentifier: "legacy-product"),
+            forTransactionId: "original-owner"
+        )
+        self.setupPurchases()
+        // The upstream helper starts a Task after dispatching. Observe the full
+        // polling interval, rather than accepting an immediate negative result.
+        await expect(self.mockLocalTransactionMetadataStore.invokedGetAllStoredMetadataCount.value)
+            .toAlways(equal(0), until: .milliseconds(250))
+        expect(self.transactionMetadataSyncHelper.isSyncing.value) == false
+        expect(self.backend.postReceiptDataCallCount) == 0
+        expect(self.mockLocalTransactionMetadataStore.getMetadata(forTransactionId: "original-owner")?.transactionId)
+            == "original-owner"
+        expect(self.mockLocalTransactionMetadataStore.invokedRemoveMetadataCount.value) == 0
+    }
+
+    @MainActor
+    func testManualSyncForegroundPreservesCachedMetadataWithoutPosting() async {
+        self.mockLocalTransactionMetadataStore.storeMetadata(
+            createCachedMetadata(transactionId: "original-owner", productIdentifier: "legacy-product"),
+            forTransactionId: "original-owner"
+        )
+        self.setupPurchases()
+        self.notificationCenter.fireNotifications()
+        await expect(self.mockLocalTransactionMetadataStore.invokedGetAllStoredMetadataCount.value)
+            .toAlways(equal(0), until: .milliseconds(250))
+        expect(self.transactionMetadataSyncHelper.isSyncing.value) == false
+        expect(self.backend.postReceiptDataCallCount) == 0
+        expect(self.mockLocalTransactionMetadataStore.getMetadata(forTransactionId: "original-owner")?.transactionId)
+            == "original-owner"
+        expect(self.mockLocalTransactionMetadataStore.invokedRemoveMetadataCount.value) == 0
     }
 
 }

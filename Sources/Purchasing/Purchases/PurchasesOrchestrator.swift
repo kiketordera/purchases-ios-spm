@@ -2493,7 +2493,9 @@ extension PurchasesOrchestrator {
 
         await storeKit2TransactionListener.set(delegate: self)
 
-        if systemInfo.storeKitVersion == .storeKit2 {
+        // Explicit purchase results still use the installed delegate. Only
+        // unsolicited StoreKit updates are disabled for manual-sync clients.
+        if systemInfo.storeKitVersion == .storeKit2 && systemInfo.dangerousSettings.autoSyncPurchases {
             await storeKit2TransactionListener.listenForTransactions()
         }
     }
@@ -2504,7 +2506,9 @@ extension PurchasesOrchestrator {
     @available(visionOS, unavailable)
     private func setSK2PurchaseIntentDelegateAndStartListening() async {
         await storeKit2TransactionListener.set(delegate: self)
-        if systemInfo.storeKitVersion == .storeKit2 {
+        // Explicit purchase results still use the installed delegate. Only
+        // unsolicited StoreKit updates are disabled for manual-sync clients.
+        if systemInfo.storeKitVersion == .storeKit2 && systemInfo.dangerousSettings.autoSyncPurchases {
             await storeKit2TransactionListener.listenForTransactions()
         }
     }
@@ -2532,7 +2536,8 @@ extension PurchasesOrchestrator {
 extension PurchasesOrchestrator {
     func handleApplicationDidBecomeActive() {
         if #available(iOS 15.0, macOS 12.0, tvOS 15.0, watchOS 8.0, *),
-           self.observerMode && self.systemInfo.storeKitVersion == .storeKit2 {
+           self.observerMode && self.systemInfo.storeKitVersion == .storeKit2 &&
+           self.systemInfo.dangerousSettings.autoSyncPurchases {
             Task(priority: .utility) {
                 await self.storeKit2ObserverModePurchaseDetector?.detectUnobservedTransactions(delegate: self)
             }

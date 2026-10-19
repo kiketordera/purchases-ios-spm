@@ -67,7 +67,9 @@ import Foundation
     internal let internalSettings: InternalDangerousSettingsType
 
     /**
-     * Disable or enable subscribing to the StoreKit queue. If this is disabled, RevenueCat won't observe
+     * Disable or enable subscribing to the StoreKit queue. In this maintenance build this includes
+     * StoreKit 2 updates, promotional listeners, observer detection and automatic cached-metadata posts.
+     * Explicit purchase, restore and sync methods remain available. If this is disabled, RevenueCat won't observe
      * the StoreKit queue, and it will not sync any purchase automatically.
      * Call syncPurchases whenever a new transaction is completed so the receipt is sent to RevenueCat's backend.
      * Consumables disappear from the receipt after the transaction is finished, so make sure purchases are

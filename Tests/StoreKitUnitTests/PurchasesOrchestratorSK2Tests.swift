@@ -2560,6 +2560,156 @@ class PurchasesOrchestratorSK2Tests: BasePurchasesOrchestratorTests, PurchasesOr
         expect(transactionListener.invokedListenForTransactionsCount) == 1
     }
 
+    func testManualSyncKeepsDelegateAndExplicitSK2PurchaseWithoutBackgroundListener() async throws {
+        self.systemInfo = MockSystemInfo(finishTransactions: true,
+                                         storeKitVersion: .storeKit2,
+                                         dangerousSettings: .init(autoSyncPurchases: false))
+        let listener = MockStoreKit2TransactionListener()
+        listener.handleActualPurchaseResult = true
+        let actualReceiptFetcher = ActualStoreKit2ReceiptFetcherSpy()
+        let actualTransactionPoster = TransactionPoster(
+            productsManager: self.productsManager,
+            receiptFetcher: self.receiptFetcher,
+            transactionFetcher: actualReceiptFetcher,
+            backend: self.backend,
+            paymentQueueWrapper: self.paymentQueueWrapper,
+            systemInfo: self.systemInfo,
+            operationDispatcher: self.operationDispatcher,
+            localTransactionMetadataStore: self.mockLocalTransactionMetadataStore
+        )
+        self.setUpOrchestrator(
+            storeKit2TransactionListener: listener,
+            storeKit2StorefrontListener: StoreKit2StorefrontListener(delegate: nil, userDefaults: nil),
+            storeKit2ObserverModePurchaseDetector: MockStoreKit2ObserverModePurchaseDetector(),
+            storeKit2ProductPurchaser: StoreKit2ProductPurchaser(systemInfo: self.systemInfo),
+            transactionPoster: actualTransactionPoster
+        )
+        await expect(listener.invokedDelegateSetter).toEventually(beTrue())
+        expect(listener.invokedListenForTransactionsCount) == 0
+        self.backend.stubbedPostReceiptResult = .success(mockCustomerInfo)
+        print("MATE_RC_MANUAL_PURCHASE_BEFORE_FETCH")
+        let product = try await self.fetchSk2Product()
+        print("MATE_RC_MANUAL_PURCHASE_PRODUCT_FETCHED")
+        print("MATE_RC_MANUAL_PURCHASE_PRE_SDK")
+        let result = try await orchestrator.purchase(sk2Product: product,
+                                                     package: nil,
+                                                     promotionalOffer: nil,
+                                                     winBackOffer: nil,
+                                                     introductoryOfferEligibilityJWS: nil,
+                                                     billingPlanType: nil,
+                                                     promotionalOfferOptions: nil)
+        print("MATE_RC_MANUAL_PURCHASE_SDK_COMPLETED")
+        XCTAssertFalse(result.userCancelled)
+        let transaction = try XCTUnwrap(result.transaction)
+        let actual = try XCTUnwrap(transaction.sk2Transaction)
+        let actualPurchaseResult = try XCTUnwrap(listener.invokedHandleParameters?.purchaseResult.value)
+        guard case let .success(purchaseVerification) = actualPurchaseResult,
+              case let .verified(purchased) = purchaseVerification else {
+            return XCTFail("The actual SDK purchase result must be verified")
+        }
+        XCTAssertEqual(purchased.id, actual.id)
+        XCTAssertEqual(purchased.productID, product.id)
+        let purchaseJWS = purchaseVerification.jwsRepresentation
+        XCTAssertFalse(purchaseJWS.isEmpty)
+        XCTAssertTrue(transaction.jwsRepresentation == purchaseJWS,
+                      "SDK result must retain the exact actual purchase-result JWS")
+        XCTAssertEqual(actual.productID, product.id)
+        XCTAssertGreaterThan(actual.id, 0)
+        let latestResult = await StoreKit.Transaction.latest(for: product.id)
+        let latest = try XCTUnwrap(latestResult)
+        guard case let .verified(verified) = latest else {
+            return XCTFail("The local StoreKit transaction must be verified")
+        }
+        XCTAssertEqual(verified.id, actual.id)
+        XCTAssertEqual(verified.productID, product.id)
+        if #available(iOS 16.0, tvOS 16.0, macOS 13.0, watchOS 9.0, *) {
+            XCTAssertEqual(verified.environment, .xcode)
+        }
+        XCTAssertFalse(latest.jwsRepresentation.isEmpty)
+        // Independent StoreKit queries can sign the same verified transaction
+        // again. Compare their stable identity, not unrelated signature bytes.
+        expect(self.backend.invokedPostReceiptDataCount) == 1
+        let postedReceipt = try XCTUnwrap(self.backend.invokedPostReceiptDataParameters?.data)
+        guard case let .sk2receipt(receipt) = postedReceipt else {
+            return XCTFail("A real Xcode transaction must post its actual StoreKit 2 receipt")
+        }
+        let capturedReceipt = try XCTUnwrap(actualReceiptFetcher.receipt)
+        XCTAssertTrue(receipt == capturedReceipt, "Backend must receive the exact real fetched receipt")
+        XCTAssertEqual(receipt.environment, .xcode)
+        let matchingClaims = try receipt.transactions.map { try JWT(from: $0).payload }.filter {
+            $0["transactionId"] as? String == String(actual.id)
+        }
+        XCTAssertEqual(matchingClaims.count, 1, "Receipt must contain exactly one actual verified transaction")
+        let receiptClaims = try XCTUnwrap(matchingClaims.first)
+        XCTAssertEqual(receiptClaims["productId"] as? String, product.id)
+        XCTAssertEqual(receiptClaims["originalTransactionId"] as? String, String(actual.originalID))
+        XCTAssertEqual(receiptClaims["bundleId"] as? String, actual.appBundleID)
+        XCTAssertEqual(receiptClaims["environment"] as? String, "Xcode")
+        expect(self.backend.invokedPostReceiptDataParameters?.postReceiptSource.initiationSource) == .purchase
+        XCTAssertTrue(self.backend.invokedPostReceiptDataParameters?.appUserID == Self.mockUserID,
+                      "Receipt post must retain the selected test owner")
+        expect(listener.invokedListenForTransactionsCount) == 0
+    }
+
+    func testManualSyncDoesNotDetectObserverTransactionsOnForeground() async throws {
+        self.systemInfo = MockSystemInfo(finishTransactions: false,
+                                         storeKitVersion: .storeKit2,
+                                         dangerousSettings: .init(autoSyncPurchases: false))
+        let listener = MockStoreKit2TransactionListener()
+        let detector = MockStoreKit2ObserverModePurchaseDetector()
+        self.setUpOrchestrator(
+            storeKit2TransactionListener: listener,
+            storeKit2StorefrontListener: StoreKit2StorefrontListener(delegate: nil, userDefaults: nil),
+            storeKit2ObserverModePurchaseDetector: detector,
+            storeKit2ProductPurchaser: StoreKit2ProductPurchaser(systemInfo: self.systemInfo)
+        )
+        await expect(listener.invokedDelegateSetter).toEventually(beTrue())
+        self.orchestrator.handleApplicationDidBecomeActive()
+        await expect { await detector.detectUnobservedTransactionsCalledCount }
+            .toAlways(equal(0), until: .milliseconds(250))
+        expect(listener.invokedListenForTransactionsCount) == 0
+    }
+
+    func testManualSyncExplicitRestoreStillPostsSelectedOwnerJWS() async throws {
+        try await self.verifyManualSyncExplicitReceiptPost(isRestore: true)
+    }
+
+    func testManualSyncExplicitSyncStillPostsSelectedOwnerJWS() async throws {
+        try await self.verifyManualSyncExplicitReceiptPost(isRestore: false)
+    }
+
+    private func verifyManualSyncExplicitReceiptPost(isRestore: Bool) async throws {
+        self.systemInfo = MockSystemInfo(finishTransactions: true,
+                                         storeKitVersion: .storeKit2,
+                                         dangerousSettings: .init(autoSyncPurchases: false))
+        let listener = MockStoreKit2TransactionListener()
+        self.setUpOrchestrator(
+            storeKit2TransactionListener: listener,
+            storeKit2StorefrontListener: StoreKit2StorefrontListener(delegate: nil, userDefaults: nil),
+            storeKit2ObserverModePurchaseDetector: MockStoreKit2ObserverModePurchaseDetector(),
+            storeKit2ProductPurchaser: StoreKit2ProductPurchaser(systemInfo: self.systemInfo)
+        )
+        await expect(listener.invokedDelegateSetter).toEventually(beTrue())
+        let transaction = try await createTransaction(finished: true)
+        self.mockTransactionFetcher.stubbedFirstVerifiedTransaction = transaction
+        let product = try await self.fetchSk2StoreProduct()
+        self.productsManager.stubbedSk2StoreProductsResult = .success([product])
+        self.backend.stubbedPostReceiptResult = .success(mockCustomerInfo)
+
+        let result = try await self.orchestrator.syncPurchases(
+            receiptRefreshPolicy: .always,
+            isRestore: isRestore,
+            initiationSource: .restore
+        )
+
+        expect(result) == mockCustomerInfo
+        expect(self.backend.invokedPostReceiptDataCount) == 1
+        expect(self.backend.invokedPostReceiptDataParameters?.data) == .jws(transaction.jwsRepresentation!)
+        expect(self.backend.invokedPostReceiptDataParameters?.appUserID) == Self.mockUserID
+        expect(self.backend.invokedPostReceiptDataParameters?.postReceiptSource.isRestore) == isRestore
+        expect(listener.invokedListenForTransactionsCount) == 0
+    }
+
     func testSK2DoesNotListenForSK2TransactionsInSimulatedStore() throws {
         self.systemInfo.stubbedApiKeyValidationResult = .simulatedStore
 

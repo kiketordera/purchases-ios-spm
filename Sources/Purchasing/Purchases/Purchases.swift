@@ -1032,7 +1032,9 @@ public typealias StartPurchaseBlock = (@escaping PurchaseCompletedBlock) -> Void
         Logger.verbose(Strings.configure.purchases_init(self, paymentQueueWrapper))
 
         #if os(iOS) || targetEnvironment(macCatalyst) || os(macOS)
-        if #available(iOS 16.4, macOS 14.4, *), systemInfo.storeKitVersion.isStoreKit2EnabledAndAvailable {
+        if #available(iOS 16.4, macOS 14.4, *),
+           systemInfo.storeKitVersion.isStoreKit2EnabledAndAvailable,
+           systemInfo.dangerousSettings.autoSyncPurchases {
             purchasesOrchestrator.setSK2PurchaseIntentListener(StoreKit2PurchaseIntentListener())
         }
         #endif
@@ -1068,7 +1070,9 @@ public typealias StartPurchaseBlock = (@escaping PurchaseCompletedBlock) -> Void
 
         /// If SK1 is not enabled, `PaymentQueueWrapper` needs to handle transactions
         /// for promotional offers to work.
-        self.paymentQueueWrapper.sk2Wrapper?.delegate = purchasesOrchestrator
+        if self.systemInfo.dangerousSettings.autoSyncPurchases {
+            self.paymentQueueWrapper.sk2Wrapper?.delegate = purchasesOrchestrator
+        }
 
         self.subscribeToAppStateNotifications()
 
@@ -1079,9 +1083,11 @@ public typealias StartPurchaseBlock = (@escaping PurchaseCompletedBlock) -> Void
             self.handleCustomerInfoChanged(from: old, to: new)
         }
 
-        self.transactionMetadataSyncHelper.syncIfNeeded(
-            allowSharingAppStoreAccount: purchasesOrchestrator.allowSharingAppStoreAccount
-        )
+        if self.systemInfo.dangerousSettings.autoSyncPurchases {
+            self.transactionMetadataSyncHelper.syncIfNeeded(
+                allowSharingAppStoreAccount: purchasesOrchestrator.allowSharingAppStoreAccount
+            )
+        }
     }
 
     deinit {
@@ -3227,9 +3233,11 @@ private extension Purchases {
                 self?.dispatchSyncSubscriberAttributes()
             }
         )
-        self.transactionMetadataSyncHelper.syncIfNeeded(
-            allowSharingAppStoreAccount: self.purchasesOrchestrator.allowSharingAppStoreAccount
-        )
+        if self.systemInfo.dangerousSettings.autoSyncPurchases {
+            self.transactionMetadataSyncHelper.syncIfNeeded(
+                allowSharingAppStoreAccount: self.purchasesOrchestrator.allowSharingAppStoreAccount
+            )
+        }
 
         #if !ENABLE_CUSTOM_ENTITLEMENT_COMPUTATION
 
