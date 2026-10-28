@@ -2559,6 +2559,112 @@ class PurchasesOrchestratorSK2Tests: BasePurchasesOrchestratorTests, PurchasesOr
         expect(transactionListener.invokedListenForTransactionsCount) == 1
     }
 
+    func testManualSyncKeepsExplicitPurchaseDelegateWithoutStartingTransactionUpdates() async throws {
+        self.setUpSystemInfo(autoSyncPurchases: false)
+        let listener = self.configureManualSyncOrchestrator()
+        await expect(listener.invokedDelegateSetter).toEventually(beTrue())
+        expect(listener.invokedDelegate === self.orchestrator) == true
+        expect(listener.invokedListenForTransactionsCount) == 0
+
+        self.backend.stubbedPostReceiptResult = .success(self.mockCustomerInfo)
+        let product = try await self.fetchSk2Product()
+        let (transaction, customerInfo, cancelled) = try await self.orchestrator.purchase(
+            sk2Product: product,
+            package: nil,
+            promotionalOffer: nil,
+            winBackOffer: nil,
+            introductoryOfferEligibilityJWS: nil,
+            billingPlanType: nil,
+            promotionalOfferOptions: nil
+        )
+
+        expect(transaction).toNot(beNil())
+        expect(customerInfo) == self.mockCustomerInfo
+        expect(cancelled) == false
+        expect(listener.invokedHandleCount) == 1
+        expect(self.backend.invokedPostReceiptDataCount) == 1
+        expect(self.backend.invokedPostReceiptDataParameters?.postReceiptSource.initiationSource) == .purchase
+        expect(listener.invokedListenForTransactionsCount) == 0
+    }
+
+    func testManualSyncDoesNotDetectObserverTransactionsOnForeground() async {
+        self.setUpSystemInfo(finishTransactions: false, autoSyncPurchases: false)
+        let detector = MockStoreKit2ObserverModePurchaseDetector()
+        let listener = self.configureManualSyncOrchestrator(detector: detector)
+        await expect(listener.invokedDelegateSetter).toEventually(beTrue())
+
+        self.orchestrator.handleApplicationDidBecomeActive()
+
+        await expect { await detector.detectUnobservedTransactionsCalledCount }
+            .toAlways(equal(0), until: .milliseconds(250))
+        expect(listener.invokedListenForTransactionsCount) == 0
+        expect(self.backend.invokedPostReceiptDataCount) == 0
+    }
+
+    func testAutomaticSyncStillDetectsObserverTransactionsOnForeground() async {
+        self.setUpSystemInfo(finishTransactions: false, autoSyncPurchases: true)
+        let detector = MockStoreKit2ObserverModePurchaseDetector()
+        let listener = self.configureManualSyncOrchestrator(detector: detector)
+        await expect(listener.invokedDelegateSetter).toEventually(beTrue())
+
+        self.orchestrator.handleApplicationDidBecomeActive()
+
+        await expect { await detector.detectUnobservedTransactionsCalledCount }.toEventually(equal(1))
+        expect(listener.invokedListenForTransactionsCount) == 1
+    }
+
+    func testManualSyncExplicitRestoreStillPostsSelectedOwnerReceipt() async throws {
+        self.setUpSystemInfo(autoSyncPurchases: false)
+        let listener = self.configureManualSyncOrchestrator()
+        await expect(listener.invokedDelegateSetter).toEventually(beTrue())
+        let transaction = try await self.createTransaction(finished: true)
+        let jws = try XCTUnwrap(transaction.jwsRepresentation)
+        self.mockTransactionFetcher.stubbedFirstVerifiedTransaction = transaction
+        self.backend.stubbedPostReceiptResult = .success(self.mockCustomerInfo)
+
+        let restored: CustomerInfo = try await withCheckedThrowingContinuation { continuation in
+            self.orchestrator.restorePurchases { continuation.resume(with: $0) }
+        }
+
+        expect(restored) == self.mockCustomerInfo
+        expect(self.backend.invokedPostReceiptDataCount) == 1
+        expect(self.backend.invokedPostReceiptDataParameters?.data) == .jws(jws)
+        expect(self.backend.invokedPostReceiptDataParameters?.postReceiptSource.initiationSource) == .restore
+        expect(listener.invokedListenForTransactionsCount) == 0
+    }
+
+    func testManualSyncExplicitSyncStillPostsSelectedOwnerReceipt() async throws {
+        self.setUpSystemInfo(autoSyncPurchases: false)
+        let listener = self.configureManualSyncOrchestrator()
+        await expect(listener.invokedDelegateSetter).toEventually(beTrue())
+        let transaction = try await self.createTransaction(finished: true)
+        let jws = try XCTUnwrap(transaction.jwsRepresentation)
+        self.mockTransactionFetcher.stubbedFirstVerifiedTransaction = transaction
+        self.backend.stubbedPostReceiptResult = .success(self.mockCustomerInfo)
+
+        let synced: CustomerInfo = try await withCheckedThrowingContinuation { continuation in
+            self.orchestrator.syncPurchases { continuation.resume(with: $0) }
+        }
+
+        expect(synced) == self.mockCustomerInfo
+        expect(self.backend.invokedPostReceiptDataCount) == 1
+        expect(self.backend.invokedPostReceiptDataParameters?.data) == .jws(jws)
+        expect(listener.invokedListenForTransactionsCount) == 0
+    }
+
+    private func configureManualSyncOrchestrator(
+        detector: MockStoreKit2ObserverModePurchaseDetector = .init()
+    ) -> MockStoreKit2TransactionListener {
+        let listener = MockStoreKit2TransactionListener()
+        self.setUpOrchestrator(
+            storeKit2TransactionListener: listener,
+            storeKit2StorefrontListener: StoreKit2StorefrontListener(delegate: nil, userDefaults: nil),
+            storeKit2ObserverModePurchaseDetector: detector,
+            storeKit2ProductPurchaser: StoreKit2ProductPurchaser(systemInfo: self.systemInfo)
+        )
+        return listener
+    }
+
     func testSK2DoesNotListenForSK2TransactionsInSimulatedStore() throws {
         self.systemInfo.stubbedApiKeyValidationResult = .simulatedStore
 
@@ -3210,6 +3316,22 @@ class PurchasesOrchestratorSK2Tests: BasePurchasesOrchestratorTests, PurchasesOr
         expect(purchaseIntentListener.listenForPurchaseIntentsCalled).to(beFalse())
         expect(purchaseIntentListener.lastProvidedDelegate).to(beNil())
         expect(purchaseIntentListener.setDelegateCalled).to(beFalse())
+    }
+
+    @available(iOS 16.4, macOS 14.4, *)
+    func testManualSyncPurchaseIntentRegistrationDoesNotStartTransactionUpdates() async {
+        self.setUpSystemInfo(autoSyncPurchases: false)
+        let transactionListener = self.configureManualSyncOrchestrator()
+        await expect(transactionListener.invokedDelegateSetter).toEventually(beTrue())
+        let purchaseIntentListener = MockStoreKit2PurchaseIntentListener()
+
+        self.orchestrator.setSK2PurchaseIntentListener(purchaseIntentListener)
+
+        await expect(purchaseIntentListener.listenForPurchaseIntentsCalled).toEventually(beTrue())
+        expect(purchaseIntentListener.setDelegateCalled) == true
+        expect(transactionListener.invokedDelegate === self.orchestrator) == true
+        expect(transactionListener.invokedListenForTransactionsCount) == 0
+        expect(self.backend.invokedPostReceiptDataCount) == 0
     }
 
     @available(iOS 16.4, macOS 14.4, *)
